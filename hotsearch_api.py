@@ -1,3 +1,6 @@
+app = Flask(__name__)
+app.config["JSON_AS_ASCII"] = False
+
 from flask import Flask, request, jsonify
 import pandas as pd
 import re
@@ -166,7 +169,7 @@ def download_csv():
         return jsonify({
             "message": "文件已上传至 GitHub",
             "file_url": download_url
-        })
+        }),200
         
     except Exception as e:
         return jsonify({"error": str(e)})
@@ -177,6 +180,11 @@ def download_csv():
 if __name__ == "__main__":
     from waitress import serve
     serve(app, host="0.0.0.0", port=5000)
+
+
+
+
+
 
 
 
