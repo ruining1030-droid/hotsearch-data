@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import pandas as pd
 import re
+import os
 from io import BytesIO
 import requests
 from requests.adapters import HTTPAdapter
@@ -12,7 +13,8 @@ app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
 
 # ===== GitHub 上传配置 =====
-GITHUB_TOKEN = "你的 token"
+
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO = "ruining1030-droid/hotsearch-data"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/"
 
