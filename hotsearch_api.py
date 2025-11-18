@@ -1,6 +1,3 @@
-app = Flask(__name__)
-app.config["JSON_AS_ASCII"] = False
-
 from flask import Flask, request, jsonify
 import pandas as pd
 import re
@@ -12,6 +9,7 @@ import base64
 import time
 
 app = Flask(__name__)
+app.config["JSON_AS_ASCII"] = False
 
 # ===== GitHub 上传配置 =====
 GITHUB_TOKEN = "你的 token"
