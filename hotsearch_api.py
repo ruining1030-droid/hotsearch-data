@@ -1,59 +1,46 @@
 from flask import Flask, request, jsonify
 import pandas as pd
 import re
-
-app = Flask(__name__)
-
 from io import BytesIO
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import base64
+import time
 
-# === GitHub raw 域名（避免重定向/SSL问题） ===
+app = Flask(__name__)
+
+# ===== GitHub 上传配置 =====
+GITHUB_TOKEN = "你的 token"
+GITHUB_REPO = "ruining1030-droid/hotsearch-data"
+GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/"
+
+# ===== 数据源文件 =====
 platform_files = {
     "weibo":   "https://raw.githubusercontent.com/ruining1030-droid/hotsearch-data/main/weibo_hotsearch.xlsx",
     "toutiao": "https://raw.githubusercontent.com/ruining1030-droid/hotsearch-data/main/toutiao_hotsearch.xlsx",
     "baidu":   "https://raw.githubusercontent.com/ruining1030-droid/hotsearch-data/main/baidu_hotsearch.xlsx",
 }
-realtime_file = "https://raw.githubusercontent.com/ruining1030-droid/hotsearch-data/main/%E5%85%A8%E7%BD%91%E7%83%AD%E6%90%9C%E6%80%BB%E8%A1%A8.csv"
 
+# ===== Requests 会话（稳定下载）=====
 def make_session():
-    """构造带重试机制的 requests Session"""
     s = requests.Session()
-    retry = Retry(
-        total=5,
-        connect=5,
-        read=5,
-        backoff_factor=0.5,
-        status_forcelist=[502, 503, 504],
-        allowed_methods=["GET"],
-    )
+    retry = Retry(total=5, connect=5, read=5, backoff_factor=0.5,
+                  status_forcelist=[502, 503, 504])
     adapter = HTTPAdapter(max_retries=retry)
     s.mount("https://", adapter)
-    s.mount("http://", adapter)
-    s.headers.update({
-        "User-Agent": "Mozilla/5.0 (Hotsearch-Agent; +https://github.com/ruining1030-droid)"
-    })
+    s.headers.update({"User-Agent": "Hotsearch-Agent"})
     return s
 
 SESSION = make_session()
 
-def fetch_excel(url: str) -> pd.DataFrame:
-    """从 GitHub 稳定拉取 Excel 文件"""
-    try:
-        r = SESSION.get(url, timeout=30)
-        r.raise_for_status()
-        return pd.read_excel(BytesIO(r.content))
-    except requests.exceptions.SSLError:
-        # SSL 异常时尝试关闭验证再试一次
-        r = SESSION.get(url, timeout=30, verify=False)
-        r.raise_for_status()
-        return pd.read_excel(BytesIO(r.content))
-    except Exception as e:
-        raise RuntimeError(f"读取远程文件失败: {url} ({e})")
+def fetch_excel(url):
+    r = SESSION.get(url, timeout=30)
+    r.raise_for_status()
+    return pd.read_excel(BytesIO(r.content))
 
-def load_data(platform: str) -> pd.DataFrame:
-    """加载指定平台或全部平台"""
+# ===== 读取全部或指定平台 =====
+def load_data(platform):
     dfs = []
     if platform in platform_files:
         df = fetch_excel(platform_files[platform])
@@ -64,13 +51,11 @@ def load_data(platform: str) -> pd.DataFrame:
             tmp = fetch_excel(url)
             tmp["平台"] = p
             dfs.append(tmp)
+
     return pd.concat(dfs, ignore_index=True)
 
-
-
-# === 工具函数 ===
+# ===== 清洗热度 =====
 def clean_hot_value(x):
-    """清洗热度字段：保留数字并统一单位"""
     if pd.isna(x):
         return 0
     s = str(x)
@@ -82,91 +67,117 @@ def clean_hot_value(x):
         value *= 10000
     return value
 
+# ===== 上传到 GitHub =====
+def upload_to_github(file_path, file_name):
+    with open(file_path, "rb") as f:
+        content = base64.b64encode(f.read()).decode("utf-8")
 
-def load_data(platform: str):
-    """加载指定平台或全部平台的热搜数据"""
-    dfs = []
-    if platform in platform_files:
-        df = pd.read_excel(platform_files[platform])
-        df["平台"] = platform
-        dfs.append(df)
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "message": f"Upload {file_name}",
+        "content": content
+    }
+
+    r = requests.put(GITHUB_API_URL + file_name, json=payload, headers=headers)
+
+    if r.status_code == 201:
+        return f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{file_name}"
     else:
-        for p, path in platform_files.items():
-            tmp = pd.read_excel(path)
-            tmp["平台"] = p
-            dfs.append(tmp)
-    df = pd.concat(dfs, ignore_index=True)
-    return df
+        raise Exception(f"上传失败：{r.json()}")
 
 
-# === 主分析接口 ===
+
+#分支一：分析
+
+
 @app.route("/analyze", methods=["POST"])
 def analyze():
-    """
-    主接口：处理智能体请求
-    支持 intent:
-      - fetch_data: 返回原始数据（可 limit 数量）
-      - generate_report: 生成简要趋势报告
-    """
     try:
         data = request.json or {}
-        intent = data.get("intent", "fetch_data")
         platform = data.get("platform", "all")
         topic = data.get("topic", "")
+        limit = int(data.get("limit", 10))
         time_period = data.get("time_period", "")
-        limit = int(data.get("limit", 0))  # 默认 0 = 全部
 
-        # ===== 加载数据 =====
         df = load_data(platform)
         df["热度"] = df["热度"].apply(clean_hot_value)
         df = df[df["热度"] > 0]
 
-        # 筛选主题
         if topic:
             df = df[df["标题"].astype(str).str.contains(topic, case=False, na=False)]
 
-        # 排序
-        df = df.sort_values("热度", ascending=False)
+        df = df.sort_values("热度", ascending=False).head(10)
 
-        # ===== Intent 分支 =====
-        if intent == "fetch_data":
-            if limit > 0:
-                df = df.head(limit)
-            result = df[["平台", "标题", "热度"]].to_dict(orient="records")
-            return jsonify({
-                "message": f"{time_period or '最近'}关于{topic or '全部'}的热搜数据（共 {len(result)} 条）：",
-                "data": result
-            })
+        if df.empty:
+            return jsonify({"message": "没有找到相关数据。"})
 
-        elif intent == "generate_report":
-            df_head = df.head(10)
-            if df_head.empty:
-                return jsonify({"message": "无数据生成报告。", "raw_text": ""})
-            top_titles = df_head["标题"].tolist()
-            mean_hot = int(df_head["热度"].mean())
-            summary = (
-                f"在{time_period or '最近'}，{platform or '全平台'}热搜的平均热度约为 {mean_hot}。"
-                f"主要热门话题包括：{', '.join(top_titles[:5])} 等。"
-            )
-            return jsonify({
-                "message": "生成趋势分析报告成功",
-                "raw_text": summary
-            })
+        mean_hot = int(df["热度"].mean())
+        summary = (
+            f"在{time_period or '最近'}，{platform} 平台的平均热度为 {mean_hot}。\n"
+            f"热门话题包括：{', '.join(df['标题'].head(5))}..."
+        )
 
-        else:
-            return jsonify({"error": f"未知的 intent: {intent}"})
+        return jsonify({
+            "message": "分析成功",
+            "raw_text": summary
+        })
 
     except Exception as e:
         return jsonify({"error": str(e)})
 
 
-if __name__ == "__main__":
-    print("lask 热搜分析接口启动中……")
-    from waitress import serve
+
+#分支二：导出数据
+
+
+@app.route("/download", methods=["POST"])
+def download_csv():
     try:
-        serve(app, host="0.0.0.0", port=5000)
+        data = request.json or {}
+        platform = data.get("platform", "all")
+        topic = data.get("topic", "")
+        raw_limit = data.get("limit", 0)
+        try:
+            limit = int(raw_limit) if str(raw_limit).strip() != "" else 0
+        except Exception:
+            limit = 0
+
+        df = load_data(platform)
+        df["热度"] = df["热度"].apply(clean_hot_value)
+        df = df[df["热度"] > 0]
+
+        if topic:
+            df = df[df["标题"].astype(str).str.contains(topic, case=False, na=False)]
+
+        df = df.sort_values("热度", ascending=False)
+
+        if limit > 0:
+            df = df.head(limit)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        file_name = f"hotsearch_{ts}.csv"
+        file_path = f"/tmp/{file_name}"
+        df.to_csv(file_path, index=False, encoding="utf-8-sig")
+
+        download_url = upload_to_github(file_path, file_name)
+        return jsonify({
+            "message": "文件已上传至 GitHub",
+            "file_url": download_url
+        })
+        
     except Exception as e:
-        print(f"启动失败: {e}")
+        return jsonify({"error": str(e)})
+
+
+
+
+if __name__ == "__main__":
+    from waitress import serve
+    serve(app, host="0.0.0.0", port=5000)
+
 
 
 
