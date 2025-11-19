@@ -23,7 +23,7 @@ GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/exports/"
 
 # ===== 数据源文件 =====
 platform_files = {
-    "weibo":   "https://raw.githubusercontent.com/ruining1030-droid/hotsearch-data/main/baidu.csv",
+    "weibo":   "https://raw.githubusercontent.com/ruining1030-droid/hotsearch-data/main/weibo_hotsearch.xlsx",
     "toutiao": "https://raw.githubusercontent.com/ruining1030-droid/hotsearch-data/main/toutiao_hotsearch.xlsx",
     "baidu":   "https://raw.githubusercontent.com/ruining1030-droid/hotsearch-data/main/baidu_hotsearch.xlsx",
 }
