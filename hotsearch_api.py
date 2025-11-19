@@ -8,15 +8,18 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import base64
 import time
+from flask import Response
+import zipfile
+from io import BytesIO
 
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
 
 # ===== GitHub 上传配置 =====
 
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = "ruining1030-droid/hotsearch-data"
-GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/"
+GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/exports/"
 
 # ===== 数据源文件 =====
 platform_files = {
@@ -135,20 +138,15 @@ def analyze():
 
 
 #分支二：导出数据
-
-
 @app.route("/download", methods=["POST"])
 def download_csv():
     try:
         data = request.json or {}
         platform = data.get("platform", "all")
         topic = data.get("topic", "")
-        raw_limit = data.get("limit", 0)
-        try:
-            limit = int(raw_limit) if str(raw_limit).strip() != "" else 0
-        except Exception:
-            limit = 0
+        limit = int(data.get("limit", 0))
 
+        # 加载数据
         df = load_data(platform)
         df["热度"] = df["热度"].apply(clean_hot_value)
         df = df[df["热度"] > 0]
@@ -160,19 +158,28 @@ def download_csv():
 
         if limit > 0:
             df = df.head(limit)
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        file_name = f"hotsearch_{ts}.csv"
-        file_path = f"/tmp/{file_name}"
-        df.to_csv(file_path, index=False, encoding="utf-8-sig")
 
-        download_url = upload_to_github(file_path, file_name)
-        return jsonify({
-            "message": "文件已上传至 GitHub",
-            "file_url": download_url
-        }),200
-        
+        # 创建内存 zip
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # 把 df 写入 zip 中
+            csv_bytes = df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+            zf.writestr("hotsearch.csv", csv_bytes)
+
+        zip_buffer.seek(0)
+
+        # 返回 zip 文件
+        return Response(
+            zip_buffer.getvalue(),
+            mimetype="application/zip",
+            headers={
+                "Content-Disposition": "attachment; filename=hotsearch.zip"
+            }
+        )
+
     except Exception as e:
         return jsonify({"error": str(e)})
+
 
 
 
